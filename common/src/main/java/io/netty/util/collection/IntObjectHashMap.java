@@ -29,6 +29,13 @@ import java.util.NoSuchElementException;
  * remove can approach O(N) for full maps, which makes a small loadFactor recommended.
  *
  * @param <V> The value type stored in the map.
+ *
+ * 针对 hash 冲突时使用的解决方案:线性探测方法（Linear Probing）
+ * value 没有一些乱七八糟的东西，value 就是一个纯粹的 value。在一个巨大的基数面前，任何一点小小的优化，都能被放大无数倍。
+ *
+ * 删除实现了 compaction，所以对于一个满了的 map 来说，删除的成本可能接近 O(N) ，所以我们推荐使用小一点的 loadFactor。
+ * loadFactor 是用来计算 maxSize 的，而 maxSize 是用来控制扩容条件的。也就是说 loadFactor 越小，那么 maxSize 也越小，就越容易触发扩容。反之，loadFactor 越大，越不容易扩容。loadFactor 的默认值是 0.5。
+ * 删除操作会把前面因为 hash 冲突导致发生了位移的 value 全部往回移动
  */
 public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectMap.Entry<V>> {
 
@@ -79,6 +86,7 @@ public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectM
         // Adjust the initial capacity if necessary.
         int capacity = adjustCapacity(initialCapacity);
 
+        // 初始两个数组,key[] 和 values[] 这两个数组的容量是一样的。
         // Allocate the arrays.
         keys = new int[capacity];
         @SuppressWarnings({ "unchecked", "SuspiciousArrayCast" })
@@ -104,35 +112,52 @@ public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectM
         return index == -1 ? null : toExternal(values[index]);
     }
 
+    /**
+     *
+     * @param key the key of the entry. key，从包装类型变成了基本类型，这就是一个性能优化的点。基本类型比包装类型占用的空间更小
+     * @param value the value of the entry.
+     * @return
+     */
     @Override
     public V put(int key, V value) {
+        // 获取本次 put 的 key 对应在 key[] 数组中的下标
         int startIndex = hashIndex(key);
         int index = startIndex;
 
         for (;;) {
+            // 判断算出来的 index 对应的 value[] 数组对应的下标是否有值
             if (values[index] == null) {
+                // 判断出 key 之前没有被维护过，直接把对应的值维护上，且 key[] 和 values[] 数组需要分别维护
                 // Found empty slot, use it.
                 keys[index] = key;
                 values[index] = toInternal(value);
+                // 判断一下当前的容量是否需要触发扩容
                 growSize();
                 return null;
             }
+            // 判断 key[] 数组 index 下标处的值是否是当前的这个 key
             if (keys[index] == key) {
+                // 如果是，说明要覆盖。先把原来该位置上的值拿出来，然后直接做一个覆盖的操作，并返回原值
                 // Found existing entry with this key, just replace the value.
                 V previousValue = values[index];
                 values[index] = toInternal(value);
                 return toExternal(previousValue);
             }
 
+            // 这个 key 想要放的 index 位置已经被其他的 key 先给占领了，出现了 hash 冲突
+            // 继续探测就是看当前发生冲突的 index 的下一个位置是啥
             // Conflict, keep probing ...
             if ((index = probeNext(index)) == startIndex) {
+                // 每次计算完 index 后，还要判断是否等于本次循环的 startIndex。如果相等，说明跑了一圈了，还没找到空位子，那么就抛出 “Unable to insert” 异常
                 // Can only happen if the map was full at MAX_ARRAY_SIZE and couldn't grow.
+                // 这种情况只有 Map 已经满了，且无法继续扩容时才会发生。最大容量是 Integer.MAX_VALUE - 8，说明是有上限的
                 throw new IllegalStateException("Unable to insert");
             }
         }
     }
 
     private int probeNext(int index) {
+        // 当前的 index 是 values[] 数组的最后一个位置，那么就返回 0，也就是返回数组的第一个下标
         return index == values.length - 1 ? 0 : index + 1;
     }
 
@@ -352,6 +377,7 @@ public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectM
      * Returns the hashed index for the given key.
      */
     private int hashIndex(int key) {
+        // 处理了 key 为负数的场景， key % keys.length 可能为负数
         // Allowing for negative keys by adding the length after the first mod operation.
         return (key % keys.length + keys.length) % keys.length;
     }
@@ -360,9 +386,11 @@ public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectM
      * Grows the map size after an insertion. If necessary, performs a rehash of the map.
      */
     private void growSize() {
+        // size 表示当前 map 里面放了几个 value
         size++;
 
         if (size > maxSize) {
+            // 扩容机制是一次扩大 2 倍
             // Need to grow the arrays. We take care to detect integer overflow,
             // also limit array size to ArrayList.MAX_ARRAY_SIZE.
             rehash(adjustCapacity((int) Math.min(keys.length * 2.0, Integer.MAX_VALUE - 8)));
@@ -374,6 +402,7 @@ public class IntObjectHashMap<V> implements IntObjectMap<V>, Iterable<IntObjectM
     }
 
     /**
+     * 把容量调整为一个奇数，因为偶数的时候会破坏 probing
      * Adjusts the given capacity value to ensure that it's odd. Even capacities can break probing.
      */
     private static int adjustCapacity(int capacity) {
